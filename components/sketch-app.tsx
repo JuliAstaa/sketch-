@@ -6,6 +6,7 @@ import {
   DIMS,
   STYLES,
   THUMB,
+  baseName,
   downloadCanvas,
   getEngine,
   isStyle,
@@ -32,7 +33,7 @@ const SHORT: Record<StyleId, string> = {
   arsir: "Arsir",
 };
 
-type Item = { id: number; photo: Photo; caption: string; style: StyleId | null };
+type Item = { id: number; name: string; photo: Photo; caption: string; style: StyleId | null };
 
 const btn = "border border-ink cursor-pointer transition-colors";
 const btnSolid = `${btn} bg-ink text-paper hover:bg-ink-soft`;
@@ -116,7 +117,13 @@ export default function SketchApp() {
     if (!list.length) return;
     const added = list.map((file) => {
       const id = nextId.current++;
-      return { id, photo: { key: `p${id}`, seed: seedFromFile(file), src: file }, caption: "", style: null };
+      return {
+        id,
+        name: baseName(file.name),
+        photo: { key: `p${id}`, seed: seedFromFile(file), src: file },
+        caption: "",
+        style: null,
+      };
     });
     setItems((s) => [...s, ...added]);
   }, []);
@@ -136,7 +143,7 @@ export default function SketchApp() {
     items.forEach((it, i) =>
       setTimeout(() => {
         const c = canvases.current.get(it.id);
-        if (c) downloadCanvas(c, it.style ?? style, i);
+        if (c) downloadCanvas(c, it.style ?? style, it.name);
       }, i * 400),
     );
 
@@ -391,7 +398,7 @@ function Card({
           Hapus
         </button>
         <button
-          onClick={() => ref.current && downloadCanvas(ref.current, style, index)}
+          onClick={() => ref.current && downloadCanvas(ref.current, style, item.name)}
           disabled={busy}
           className={`${btnSolid} flex-1 px-3 py-[9px] disabled:cursor-wait disabled:opacity-60`}
         >

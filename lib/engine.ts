@@ -541,9 +541,17 @@ function constructionLines(ctx: CanvasRenderingContext2D, { W, H, F, bottom, sc,
   ctx.restore();
 }
 
-export function downloadCanvas(c: HTMLCanvasElement, style: StyleId, index: number) {
+/** "liburan.HEIC" → "liburan"; strips characters that are invalid in file names. */
+export function baseName(fileName: string) {
+  const stem = fileName.replace(/\.[^./\\]+$/, "");
+  const clean = stem.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").trim();
+  return clean || "foto";
+}
+
+/** Downloads as "{original name}_{style}.jpeg", e.g. aku.jpeg → aku_cat-air.jpeg */
+export function downloadCanvas(c: HTMLCanvasElement, style: StyleId, name: string) {
   const a = document.createElement("a");
-  a.download = `bingkai-${styleOf(style).slug}-${String(index + 1).padStart(2, "0")}.jpg`;
+  a.download = `${name}_${styleOf(style).slug}.jpeg`;
   a.href = c.toDataURL("image/jpeg", 0.95);
   a.click();
 }
