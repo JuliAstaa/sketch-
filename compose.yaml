@@ -5,4 +5,4 @@ services:
     container_name: bingkai-sketsa
     restart: unless-stopped
     ports:
-      - "3001:3000" # ganti port kiri kalau 3000 sudah dipakai di homeserver
+      - "3005:3000" # ganti port kiri kalau 3000 sudah dipakai di homeserver
