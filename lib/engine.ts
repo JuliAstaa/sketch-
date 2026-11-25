@@ -37,6 +37,9 @@ export type RenderOptions = {
   showText: boolean;
   caption: string;
   fontFamily: string;
+  /** small camera info line under the caption (e.g. "Fujifilm X-T30 · 35mm · f/2 · 1/250s · ISO 400"); empty = none */
+  meta: string;
+  metaFontFamily: string;
 };
 
 /** Stable seed from file identity, so the same photo renders identically every time. */
@@ -217,11 +220,12 @@ export class Engine {
     });
   }
 
-  private fonts(family: string) {
-    let p = this.fontsLoaded.get(family);
+  /** `font` is a CSS font shorthand, e.g. "600 80px Caveat". */
+  private fonts(font: string) {
+    let p = this.fontsLoaded.get(font);
     if (!p) {
-      p = document.fonts.load(`600 80px ${family}`).then(() => undefined, () => undefined);
-      this.fontsLoaded.set(family, p);
+      p = document.fonts.load(font).then(() => undefined, () => undefined);
+      this.fontsLoaded.set(font, p);
     }
     return p;
   }
@@ -245,7 +249,8 @@ export class Engine {
       ctx.drawImage(masked(src.canvas, this.vector(`${photo.key}|m-belum|${W}x${H}|${F}|${bottom}`, () => belumMask(g))), 0, 0);
     } else if (o.style === "sketsa") {
       ctx.drawImage(await this.layer("sketchFull", photo, o.dims, lo), 0, 0);
-      pencilFrame(ctx, g);
+      // without a caption, the camera info sits low in the border; keep the bottom line clear of it
+      pencilFrame(ctx, g, !!o.meta && !o.showText);
     } else if (o.style === "catair") {
       const [sk, wc] = await Promise.all([this.layer("sketch", photo, o.dims, lo), this.layer("watercolor", photo, o.dims, lo)]);
       ctx.drawImage(sk, 0, 0);
@@ -261,9 +266,14 @@ export class Engine {
       constructionLines(ctx, g);
     }
 
+    let captionWidth = 0;
     if (o.showText) {
-      await this.fonts(o.fontFamily);
-      caption(ctx, g, o.caption, o.fontFamily);
+      await this.fonts(`600 80px ${o.fontFamily}`);
+      captionWidth = caption(ctx, g, o.caption, o.fontFamily);
+    }
+    if (o.meta) {
+      await this.fonts(`500 30px ${o.metaFontFamily}`);
+      metaBlock(ctx, g, o.meta, o.metaFontFamily, o.showText, captionWidth);
     }
     return c;
   }
@@ -296,7 +306,8 @@ function masked(color: HTMLCanvasElement, mask: HTMLCanvasElement) {
   return c;
 }
 
-function caption(ctx: CanvasRenderingContext2D, { H, F, sc, paper }: Geo, text: string, family: string) {
+/** Handwritten caption, bottom-left. Returns its width so the camera info can avoid it. */
+function caption(ctx: CanvasRenderingContext2D, { H, F, sc, paper }: Geo, text: string, family: string): number {
   const y = H - F + 6 * sc;
   ctx.save();
   ctx.lineJoin = "round";
@@ -307,6 +318,71 @@ function caption(ctx: CanvasRenderingContext2D, { H, F, sc, paper }: Geo, text: 
   ctx.lineWidth = 18 * sc;
   ctx.strokeText(text, F, y);
   ctx.fillText(text, F, y);
+  const w = text ? ctx.measureText(text).width : 0;
+  ctx.restore();
+  return w;
+}
+
+/** Camera body vs. exposure settings: "Samsung A55 · f/1.8 · 1/25s · ISO 640" → ["Samsung A55", "f/1.8 · 1/25s · ISO 640"]. */
+function splitMeta(text: string): string[] {
+  const parts = text.split(/\s+·\s+/).filter(Boolean);
+  const isSetting = (p: string) => /^(f\/|ISO\b|1\/|\d)/i.test(p);
+  if (parts.length < 2 || isSetting(parts[0])) return [parts.join(" · ")];
+  return [parts[0], parts.slice(1).join(" · ")];
+}
+
+/**
+ * Camera info, bottom-right, right-aligned: camera on top, settings below.
+ * With a caption it shares the caption's baseline; without one it sits low in the border.
+ * Shrinks to fit beside the caption so the two never overlap.
+ */
+function metaBlock(
+  ctx: CanvasRenderingContext2D,
+  { W, H, F, sc, paper }: Geo,
+  text: string,
+  family: string,
+  withCaption: boolean,
+  captionWidth: number,
+) {
+  const lines = splitMeta(text);
+  let size = 30 * sc;
+  const font = (s: number) => `500 ${s}px ${family}`;
+  ctx.save();
+  ctx.font = font(size);
+  const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const gap = 36 * sc;
+  const room = W - 2 * F - (captionWidth ? captionWidth + gap : 0);
+  if (widest > room) size = Math.max(16 * sc, (size * room) / widest);
+  ctx.font = font(size);
+
+  const lead = size * 1.25;
+  const x = W - F;
+  const baseY = withCaption ? H - F + 6 * sc : H - Math.max(F * 0.34, size * 0.9);
+  ctx.textAlign = "right";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = rgb(px.paperRGB(paper));
+  // soft paper patch behind the block so sketch lines don't run through the small letters
+  const paperCss = rgb(px.paperRGB(paper));
+  const blockW = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  const pad = 10 * sc;
+  const top = baseY - (lines.length - 1) * lead - size * 0.85;
+  ctx.save();
+  ctx.fillStyle = paperCss;
+  ctx.shadowColor = paperCss;
+  ctx.shadowBlur = 18 * sc;
+  ctx.globalAlpha = 0.88;
+  ctx.fillRect(x - blockW - pad, top - pad, blockW + 2 * pad, baseY + size * 0.3 + pad - (top - pad));
+  ctx.restore();
+
+  ctx.fillStyle = rgb(px.INK);
+  ctx.lineWidth = 6 * sc;
+  lines.forEach((l, k) => {
+    const y = baseY - (lines.length - 1 - k) * lead;
+    ctx.globalAlpha = 1;
+    ctx.strokeText(l, x, y);
+    ctx.globalAlpha = k === 0 && lines.length > 1 ? 0.92 : 0.75; // camera name a touch stronger
+    ctx.fillText(l, x, y);
+  });
   ctx.restore();
 }
 
@@ -377,11 +453,13 @@ function wobblyLine(ctx: CanvasRenderingContext2D, r: () => number, ax: number, 
 }
 
 /** Gaya 1 — two layers of shaky pencil lines at inset frame/2, overshooting corners. */
-function pencilFrame(ctx: CanvasRenderingContext2D, { W, H, F, sc, seed }: Geo) {
+function pencilFrame(ctx: CanvasRenderingContext2D, { W, H, F, sc, seed }: Geo, roomForMeta = false) {
   const r = px.rng(seed * 17 + 9);
   const i = F / 2;
+  // with a camera-info line, the bottom line drops below it instead of striking through
+  const ib = roomForMeta ? Math.max(F * 0.16, 10 * sc) : i;
   const a: [number, number] = [i, i], b: [number, number] = [W - i, i];
-  const cc: [number, number] = [W - i, H - i], d: [number, number] = [i, H - i];
+  const cc: [number, number] = [W - i, H - ib], d: [number, number] = [i, H - ib];
   const sides: [[number, number], [number, number]][] = [[a, b], [b, cc], [cc, d], [d, a]];
   ctx.save();
   ctx.strokeStyle = rgb(px.INK);

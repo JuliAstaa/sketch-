@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { caveat } from "@/app/fonts";
+import { caveat, plexMono } from "@/app/fonts";
+import { formatExif, readExif } from "@/lib/exif";
 import {
   DIMS,
   STYLES,
@@ -22,6 +23,7 @@ const FRAME = 90; // px (at 1080 wide) of sketch border around the coloured area
 const PAPER: Paper = "putih";
 const RATIOS: Ratio[] = ["3:4", "4:5"];
 const FONT = caveat.style.fontFamily;
+const META_FONT = plexMono.style.fontFamily;
 const STORE_KEY = "bingkai-sketsa:gaya";
 const DEMO: Photo = { key: "demo", seed: 20251124, src: "/demo.jpg" };
 
@@ -33,7 +35,15 @@ const SHORT: Record<StyleId, string> = {
   arsir: "Arsir",
 };
 
-type Item = { id: number; name: string; photo: Photo; caption: string; style: StyleId | null };
+type Item = {
+  id: number;
+  name: string;
+  photo: Photo;
+  caption: string;
+  /** camera info line, prefilled from EXIF, editable */
+  meta: string;
+  style: StyleId | null;
+};
 
 const btn = "border border-ink cursor-pointer transition-colors";
 const btnSolid = `${btn} bg-ink text-paper hover:bg-ink-soft`;
@@ -54,7 +64,7 @@ function readStoredStyle(): StyleId {
 /**
  * Renders `photo` in a style into the returned canvas ref (off the critical path:
  * pixel work runs in a worker). `busy` is true while a style/size change is in flight;
- * caption edits redraw without flagging busy.
+ * caption/meta edits redraw without flagging busy.
  */
 function useRendered(
   photo: Photo | null,
@@ -63,6 +73,7 @@ function useRendered(
   H: number,
   showText: boolean,
   caption: string,
+  meta: string,
   delay = 0,
 ) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -74,7 +85,7 @@ function useRendered(
     let alive = true;
     const timer = setTimeout(() => {
       getEngine()
-        .compose(photo, { style, dims: { W, H }, frame: FRAME, paper: PAPER, showText, caption, fontFamily: FONT })
+        .compose(photo, { style, dims: { W, H }, frame: FRAME, paper: PAPER, showText, caption, fontFamily: FONT, meta, metaFontFamily: META_FONT })
         .then((out) => {
           const c = ref.current;
           if (!alive || !c) return;
@@ -89,7 +100,7 @@ function useRendered(
       alive = false;
       clearTimeout(timer);
     };
-  }, [photo, style, W, H, showText, caption, delay, heavy]);
+  }, [photo, style, W, H, showText, caption, meta, delay, heavy]);
 
   return { ref, busy: done !== heavy };
 }
@@ -98,6 +109,7 @@ export default function SketchApp() {
   const [items, setItems] = useState<Item[]>([]);
   const [ratio, setRatio] = useState<Ratio>("3:4");
   const [showText, setShowText] = useState(true);
+  const [showMeta, setShowMeta] = useState(true);
   const [style, setStyle] = useState<StyleId>(readStoredStyle);
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -122,10 +134,18 @@ export default function SketchApp() {
         name: baseName(file.name),
         photo: { key: `p${id}`, seed: seedFromFile(file), src: file },
         caption: "",
+        meta: "",
         style: null,
       };
     });
     setItems((s) => [...s, ...added]);
+    // read camera info (EXIF) in the background and prefill each card
+    added.forEach((it, k) =>
+      readExif(list[k]).then((info) => {
+        const meta = formatExif(info);
+        if (meta) setItems((s) => s.map((x) => (x.id === it.id && !x.meta ? { ...x, meta } : x)));
+      }),
+    );
   }, []);
 
   const openPicker = () => fileRef.current?.click();
@@ -240,6 +260,17 @@ export default function SketchApp() {
               </button>
             </div>
 
+            <div className="flex flex-col gap-2">
+              <span className={label}>Info kamera</span>
+              <button
+                onClick={() => setShowMeta((v) => !v)}
+                aria-pressed={showMeta}
+                className={`${btnGhost} px-3 py-2`}
+              >
+                {showMeta ? "Tampil" : "Sembunyi"}
+              </button>
+            </div>
+
             <div className="ml-auto flex flex-wrap gap-2">
               <button onClick={openPicker} className={`${btnGhost} px-4 py-2.5`}>
                 + Tambah foto
@@ -259,6 +290,7 @@ export default function SketchApp() {
                 globalStyle={style}
                 ratio={ratio}
                 showText={showText}
+                showMeta={showMeta}
                 onCanvas={(el) => {
                   if (el) canvases.current.set(it.id, el);
                 }}
@@ -285,7 +317,7 @@ function StyleButton({
   onPick: () => void;
 }) {
   // thumbnails wait a moment so the full-size cards get the worker first
-  const { ref, busy } = useRendered(photo, id, THUMB.W, THUMB.H, false, "", 700);
+  const { ref, busy } = useRendered(photo, id, THUMB.W, THUMB.H, false, "", "", 700);
   return (
     <button
       role="radio"
@@ -304,7 +336,19 @@ function StyleButton({
 }
 
 function Demo() {
-  const { ref } = useRendered(DEMO, "belum", 1080, 1440, true, "Mond.");
+  const [meta, setMeta] = useState("");
+  useEffect(() => {
+    let alive = true;
+    fetch(DEMO.src as string)
+      .then((r) => r.blob())
+      .then(readExif)
+      .then((info) => alive && setMeta(formatExif(info)))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const { ref } = useRendered(DEMO, "belum", 1080, 1440, true, "Mond.", meta);
   return (
     <canvas
       ref={ref}
@@ -320,6 +364,7 @@ function Card({
   globalStyle,
   ratio,
   showText,
+  showMeta,
   onCanvas,
   onChange,
   onRemove,
@@ -329,13 +374,14 @@ function Card({
   globalStyle: StyleId;
   ratio: Ratio;
   showText: boolean;
+  showMeta: boolean;
   onCanvas: (el: HTMLCanvasElement | null) => void;
   onChange: (patch: Partial<Item>) => void;
   onRemove: () => void;
 }) {
   const style = item.style ?? globalStyle;
   const { W, H } = DIMS[ratio];
-  const { ref, busy } = useRendered(item.photo, style, W, H, showText, item.caption);
+  const { ref, busy } = useRendered(item.photo, style, W, H, showText, item.caption, showMeta ? item.meta : "");
   const [open, setOpen] = useState(false);
   const n = String(index + 1).padStart(2, "0");
 
@@ -370,6 +416,16 @@ function Card({
           className="min-w-0 flex-1 border-0 border-b border-line bg-transparent px-0.5 py-1.5 font-hand text-2xl text-ink outline-none focus:border-ink"
         />
       </div>
+
+      {showMeta && (
+        <input
+          value={item.meta}
+          onChange={(e) => onChange({ meta: e.target.value })}
+          placeholder="info kamera tidak ada — tulis sendiri…"
+          aria-label={`Info kamera untuk foto ${n}`}
+          className="-mt-1 min-w-0 border-0 border-b border-dashed border-line bg-transparent px-0.5 py-1 text-[11px] text-ink-soft outline-none placeholder:text-faint focus:border-ink"
+        />
+      )}
 
       <div className="flex flex-col gap-2">
         <button
