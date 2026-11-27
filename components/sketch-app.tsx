@@ -33,6 +33,8 @@ const SHORT: Record<StyleId, string> = {
   catair: "Cat air",
   kuas: "Kuas",
   arsir: "Arsir",
+  polos: "Polos",
+  batik: "Batik",
 };
 
 type Item = {

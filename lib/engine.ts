@@ -8,7 +8,7 @@ import type { WorkerRequest, WorkerResponse } from "./pixels.worker";
 export type { Paper };
 export type Ratio = "3:4" | "4:5";
 export type Dims = { W: number; H: number };
-export type StyleId = "belum" | "sketsa" | "catair" | "kuas" | "arsir";
+export type StyleId = "belum" | "sketsa" | "catair" | "kuas" | "arsir" | "polos" | "batik";
 
 export const DIMS: Record<Ratio, Dims> = {
   "3:4": { W: 1080, H: 1440 },
@@ -22,6 +22,8 @@ export const STYLES: { id: StyleId; label: string; slug: string }[] = [
   { id: "catair", label: "Cat air", slug: "cat-air" },
   { id: "kuas", label: "Sapuan kuas", slug: "sapuan-kuas" },
   { id: "arsir", label: "Arsir tinta", slug: "arsir-tinta" },
+  { id: "polos", label: "Bingkai polos (foto utuh)", slug: "polos" },
+  { id: "batik", label: "Bingkai batik (foto utuh)", slug: "batik" },
 ];
 export const isStyle = (v: unknown): v is StyleId => STYLES.some((s) => s.id === v);
 export const styleOf = (id: StyleId) => STYLES.find((s) => s.id === id)!;
@@ -240,6 +242,20 @@ export class Engine {
     const lo = { paper: o.paper, F, bottom };
 
     const { c, ctx } = mk(W, H);
+
+    if (o.style === "polos" || o.style === "batik") {
+      // whole photo, never cropped: fit (contain) the original inside the frame
+      const m = await this.master(photo);
+      const batik = o.style === "batik";
+      ctx.drawImage(
+        this.vector(`${batik ? "batik" : "paper"}|${W}x${H}|${F}|${o.paper}`, () => (batik ? batikBackdrop(g) : paperBackdrop(g))),
+        0,
+        0,
+      );
+      placeWhole(ctx, m, g, batik ? 16 * sc : 0);
+      return this.finishText(c, ctx, g, o);
+    }
+
     const src = await this.source(photo, o.dims);
 
     if (o.style === "belum") {
@@ -266,6 +282,10 @@ export class Engine {
       constructionLines(ctx, g);
     }
 
+    return this.finishText(c, ctx, g, o);
+  }
+
+  private async finishText(c: HTMLCanvasElement, ctx: CanvasRenderingContext2D, g: Geo, o: RenderOptions) {
     let captionWidth = 0;
     if (o.showText) {
       await this.fonts(`600 80px ${o.fontFamily}`);
@@ -297,6 +317,129 @@ export const getEngine = () => (engine ??= new Engine());
 /* ───────────────────────── compositing helpers ───────────────────────── */
 
 type Geo = { W: number; H: number; F: number; bottom: number; sc: number; seed: number; paper: Paper };
+
+/* ── whole-photo styles (polos / batik) ── */
+
+const SOGA: RGB = [112, 74, 42]; // batik brown
+
+/** Plain paper with faint, seed-free grain (same for every photo, so it caches once per size). */
+function paperBackdrop({ W, H, paper }: Geo) {
+  const { c, ctx } = mk(W, H);
+  const bg = px.paperRGB(paper);
+  const img = ctx.createImageData(W, H);
+  const d = img.data;
+  for (let y = 0, p = 0; y < H; y++) {
+    for (let x = 0; x < W; x++, p += 4) {
+      const n = (px.hash2(x, y, 977) - 0.5) * 6;
+      d[p] = bg[0] + n;
+      d[p + 1] = bg[1] + n;
+      d[p + 2] = bg[2] + n;
+      d[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+/** Kawung motif over the whole canvas, then a paper mat inside a band of batik. */
+function batikBackdrop(g: Geo) {
+  const { W, H, F, sc, paper } = g;
+  const c = paperBackdrop(g);
+  const ctx = c.getContext("2d")!;
+  const bg = px.paperRGB(paper);
+  // cloth tone: paper with a little soga mixed in
+  ctx.fillStyle = rgb([0, 1, 2].map((i) => bg[i] * 0.88 + SOGA[i] * 0.12) as RGB);
+  ctx.globalAlpha = 0.9;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+  kawung(ctx, W, H, 66 * sc + 6, rgb(SOGA), sc);
+
+  // paper mat
+  const band = Math.max(F * 0.72, 18 * sc);
+  ctx.save();
+  ctx.shadowColor = "rgba(36,35,33,0.28)";
+  ctx.shadowBlur = 14 * sc;
+  ctx.shadowOffsetY = 3 * sc;
+  ctx.drawImage(paperBackdrop(g), band, band, W - 2 * band, H - 2 * band, band, band, W - 2 * band, H - 2 * band);
+  ctx.restore();
+  // fine double rule along the mat edge, like a batik "pinggiran"
+  ctx.strokeStyle = rgb(SOGA);
+  ctx.lineWidth = Math.max(0.6, 1.4 * sc);
+  for (const inset of [7 * sc, 12 * sc]) {
+    ctx.globalAlpha = inset < 10 * sc ? 0.85 : 0.5;
+    ctx.strokeRect(band + inset, band + inset, W - 2 * (band + inset), H - 2 * (band + inset));
+  }
+  ctx.globalAlpha = 1;
+  return c;
+}
+
+/** Kawung: four-petal flowers on a square lattice, petals meeting tip-to-tip on the diagonals. */
+function kawung(ctx: CanvasRenderingContext2D, W: number, H: number, s: number, col: string, sc: number) {
+  const d = s * 0.3536, rx = s * 0.33, ry = s * 0.165;
+  ctx.save();
+  ctx.strokeStyle = col;
+  ctx.fillStyle = col;
+  const lw = Math.max(0.5, 1.6 * sc);
+  for (let y = 0; y <= H + s; y += s) {
+    for (let x = 0; x <= W + s; x += s) {
+      for (let k = 0; k < 4; k++) {
+        const a = Math.PI / 4 + (k * Math.PI) / 2;
+        const cx = x + Math.cos(a) * d, cy = y + Math.sin(a) * d;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, a, 0, Math.PI * 2);
+        ctx.globalAlpha = 0.2;
+        ctx.fill();
+        ctx.globalAlpha = 0.9;
+        ctx.lineWidth = lw;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx * 0.5, ry * 0.42, a, 0, Math.PI * 2);
+        ctx.globalAlpha = 0.6;
+        ctx.lineWidth = lw * 0.7;
+        ctx.stroke();
+        // cecek: dots along the petal axis
+        ctx.globalAlpha = 0.85;
+        for (const t of [-0.72, 0, 0.72]) {
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(a) * rx * t, cy + Math.sin(a) * rx * t, Math.max(0.5, (t ? 1.3 : 1.9) * sc), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      // flower centre and the small diamond where four petals meet
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      ctx.arc(x, y, s * 0.06, 0, Math.PI * 2);
+      ctx.stroke();
+      const mx = x + s / 2, my = y + s / 2, q = s * 0.05;
+      ctx.beginPath();
+      ctx.moveTo(mx, my - q);
+      ctx.lineTo(mx + q, my);
+      ctx.lineTo(mx, my + q);
+      ctx.lineTo(mx - q, my);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+/** Draw the full photo (no cropping) centred in the frame area, like a mounted print. */
+function placeWhole(ctx: CanvasRenderingContext2D, img: Drawable, { W, H, F, bottom, sc }: Geo, inset: number) {
+  const x0 = F + inset, y0 = F + inset, x1 = W - F - inset, y1 = H - bottom - inset;
+  const s = Math.min((x1 - x0) / img.width, (y1 - y0) / img.height);
+  const w = img.width * s, h = img.height * s;
+  const x = x0 + (x1 - x0 - w) / 2, y = y0 + (y1 - y0 - h) / 2;
+  ctx.save();
+  ctx.shadowColor = "rgba(36,35,33,0.22)";
+  ctx.shadowBlur = 16 * sc;
+  ctx.shadowOffsetY = 5 * sc;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, x, y, w, h);
+}
 
 function masked(color: HTMLCanvasElement, mask: HTMLCanvasElement) {
   const { c, ctx } = mk(color.width, color.height);
